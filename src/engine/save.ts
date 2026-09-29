@@ -4,46 +4,54 @@
  */
 export type Locale = 'en' | 'zh-CN'
 export type Quality = 'low' | 'medium' | 'high'
-
-export type ScoreEntry = { name: string; score: number; seconds: number; at: number }
+export type Difficulty = 'relaxed' | 'standard' | 'intense'
+/** One finished race on the local leaderboard (sorted by total time). */
+export type RaceEntry = { name: string; character: string; time: number; place: number; bestLap: number; at: number }
 
 export type SaveData = {
-  version: 1
+  version: 2
   /** '' = never chosen; the game follows the browser language until the player picks one. */
   locale: Locale | ''
   musicVolume: number
   sfxVolume: number
   muted: boolean
+  /** Steering sensitivity multiplier (0.5..2). */
   sensitivity: number
-  invertY: boolean
   quality: Quality
+  difficulty: Difficulty
   reducedMotion: boolean
+  /** Touch play: accelerate automatically. */
+  autoGas: boolean
   tutorialDone: boolean
   playerName: string
-  leaderboard: ScoreEntry[]
+  character: string
+  leaderboard: RaceEntry[]
 }
 
-export const SAVE_KEY = 'game3d.save'
+export const SAVE_KEY = 'critterkart.save'
 export const LEADERBOARD_SIZE = 10
 
 export function defaultSave(): SaveData {
   return {
-    version: 1,
+    version: 2,
     locale: '',
     musicVolume: 0.7,
     sfxVolume: 0.8,
     muted: false,
     sensitivity: 1,
-    invertY: false,
     quality: 'high',
+    difficulty: 'intense',
     reducedMotion: false,
+    autoGas: true,
     tutorialDone: false,
     playerName: 'PLAYER',
+    character: 'hamster',
     leaderboard: [],
   }
 }
 
 const clamp01 = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback)
+const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
 
 /** Parse untrusted stored JSON into a valid SaveData (pure; unit tested). */
 export function parseSave(raw: string | null): SaveData {
@@ -57,30 +65,45 @@ export function parseSave(raw: string | null): SaveData {
   } catch {
     return base
   }
-  if (data.version !== 1) return base
+  if (data.version !== 2) return base
   const board = Array.isArray(data.leaderboard) ? data.leaderboard : []
   return {
-    version: 1,
+    version: 2,
     locale: data.locale === 'en' || data.locale === 'zh-CN' ? data.locale : '',
     musicVolume: clamp01(data.musicVolume, base.musicVolume),
     sfxVolume: clamp01(data.sfxVolume, base.sfxVolume),
     muted: data.muted === true,
-    sensitivity: typeof data.sensitivity === 'number' && data.sensitivity >= 0.2 && data.sensitivity <= 3 ? data.sensitivity : base.sensitivity,
-    invertY: data.invertY === true,
+    sensitivity: typeof data.sensitivity === 'number' && data.sensitivity >= 0.5 && data.sensitivity <= 2 ? data.sensitivity : base.sensitivity,
     quality: data.quality === 'low' || data.quality === 'medium' || data.quality === 'high' ? data.quality : base.quality,
+    difficulty: data.difficulty === 'relaxed' || data.difficulty === 'standard' || data.difficulty === 'intense' ? data.difficulty : base.difficulty,
     reducedMotion: data.reducedMotion === true,
+    autoGas: data.autoGas !== false,
     tutorialDone: data.tutorialDone === true,
     playerName: typeof data.playerName === 'string' && data.playerName.trim() ? data.playerName.trim().slice(0, 16) : base.playerName,
+    character: typeof data.character === 'string' && /^[a-z]{2,16}$/.test(data.character) ? data.character : base.character,
     leaderboard: board
-      .filter((e): e is ScoreEntry => !!e && typeof e === 'object' && typeof (e as ScoreEntry).name === 'string' && Number.isFinite((e as ScoreEntry).score))
-      .map(e => ({ name: e.name.slice(0, 16), score: Math.max(0, Math.floor(e.score)), seconds: Number.isFinite(e.seconds) ? e.seconds : 0, at: Number.isFinite(e.at) ? e.at : 0 }))
+      .filter((e): e is RaceEntry => !!e && typeof e === 'object' && typeof (e as RaceEntry).name === 'string' && Number.isFinite((e as RaceEntry).time) && (e as RaceEntry).time > 0)
+      .map(e => ({
+        name: e.name.slice(0, 16),
+        character: typeof e.character === 'string' ? e.character.slice(0, 16) : 'hamster',
+        time: e.time,
+        place: Math.max(1, Math.min(6, Math.floor(num(e.place, 6)))),
+        bestLap: num(e.bestLap, 0),
+        at: num(e.at, 0),
+      }))
+      .sort(compareEntries)
       .slice(0, LEADERBOARD_SIZE),
   }
 }
 
-/** Insert a run into a bounded, deterministically ordered leaderboard (higher score, then faster, then earlier). */
-export function insertScore(board: ScoreEntry[], entry: ScoreEntry): { board: ScoreEntry[]; rank: number } {
-  const next = [...board, entry].sort((a, b) => b.score - a.score || a.seconds - b.seconds || a.at - b.at).slice(0, LEADERBOARD_SIZE)
+/** Faster total time first, then better place, then earlier. */
+export function compareEntries(a: RaceEntry, b: RaceEntry): number {
+  return a.time - b.time || a.place - b.place || a.at - b.at
+}
+
+/** Insert a race into the bounded leaderboard. `rank` is -1 when it did not make the cut. */
+export function insertEntry(board: RaceEntry[], entry: RaceEntry): { board: RaceEntry[]; rank: number } {
+  const next = [...board, entry].sort(compareEntries).slice(0, LEADERBOARD_SIZE)
   return { board: next, rank: next.indexOf(entry) }
 }
 

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "萌兽卡丁车：上强度",
+  "description": "糖果谷地 3D 卡丁车竞速：六位萌兽车手、漂移加速、趣味道具与五名 AI 对手。选择竞赛强度，挑战更紧凑的攻防与超车。",
+  "defaultCaptions": {
+    "x": "六只萌兽，三圈狂飙！来糖果谷地挑战高强度卡丁车竞速。",
+    "facebook": "《萌兽卡丁车：上强度》——漂移、道具、超车，和五位 AI 对手在糖果谷地一决高下。",
+    "reddit": "A candy-valley kart racer with drift boosts, playful items, five AI rivals, and adjustable race intensity.",
+    "discord": "准备发车！来《萌兽卡丁车：上强度》挑战糖果谷地赛道。"
+  },
+  "assets": {
+    "og": "assets/share/og.png",
+    "favicon": "assets/share/favicon.png"
+  }
+}

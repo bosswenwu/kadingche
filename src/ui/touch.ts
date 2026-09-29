@@ -1,87 +1,95 @@
-import type { Input } from '../engine/input'
+import type { Action, Input } from '../engine/input'
+import type { I18n } from '../engine/i18n'
 
 /**
- * On-screen touch controls: a floating stick on the left half, drag-to-look on the right half,
- * and JUMP / DASH buttons. Enabled automatically on the first touch.
+ * Landscape touch controls: a horizontal steering stick on the left and DRIFT / ITEM / BRAKE
+ * buttons on the right. Everything feeds the unified Input so gameplay code is unaware of touch.
+ * No gyro or other phone-only APIs.
  */
 export class TouchControls {
-  private stickId: number | null = null
-  private lookId: number | null = null
-  private origin = { x: 0, y: 0 }
-  private last = { x: 0, y: 0 }
-  private readonly stick: HTMLElement
+  private readonly el: HTMLElement
   private readonly knob: HTMLElement
+  private stickId = -1
+  private stickX = 0
+  private stickCenter = 0
 
-  constructor(root: HTMLElement, private readonly input: Input, private readonly active: () => boolean) {
-    const layer = root.querySelector<HTMLElement>('.touch')!
-    this.stick = layer.querySelector('.touch-stick')!
-    this.knob = this.stick.querySelector('i')!
-    const radius = 56
-
-    const enable = () => document.body.classList.add('has-touch')
-    if (matchMedia('(pointer: coarse)').matches) enable()
-    window.addEventListener('touchstart', enable, { once: true, passive: true })
-    // Any touch switches hints/prompts to touch, even taps on menu buttons.
-    window.addEventListener('pointerdown', e => {
-      if (e.pointerType === 'touch') this.input.method = 'touch'
-    }, { capture: true })
-
-    const canvas = document.querySelector<HTMLCanvasElement>('#game')!
-    canvas.addEventListener('pointerdown', e => {
-      if (e.pointerType !== 'touch' || !this.active()) return
-      if (e.clientX < window.innerWidth * 0.45 && this.stickId === null) {
-        this.stickId = e.pointerId
-        this.origin = { x: e.clientX, y: e.clientY }
-        this.stick.style.left = `${e.clientX}px`
-        this.stick.style.top = `${e.clientY}px`
-        this.stick.classList.add('is-active')
-      } else if (this.lookId === null) {
-        this.lookId = e.pointerId
-        this.last = { x: e.clientX, y: e.clientY }
-      }
+  constructor(root: HTMLElement, private readonly input: Input, private readonly i18n: I18n, private readonly active: () => boolean) {
+    this.el = document.createElement('div')
+    this.el.className = 'touch'
+    this.el.innerHTML = `
+      <div class="stick" data-stick><div class="stick-track"><span>◀</span><span>▶</span></div><div class="stick-knob" data-knob></div></div>
+      <div class="tbtns">
+        <button class="tbtn tbtn-item" data-a="item"><span data-l="touch.item"></span></button>
+        <button class="tbtn tbtn-brake" data-a="brake"><span data-l="touch.brake"></span></button>
+        <button class="tbtn tbtn-drift" data-a="drift"><span data-l="touch.drift"></span></button>
+      </div>`
+    root.appendChild(this.el)
+    this.knob = this.el.querySelector('[data-knob]')!
+    const stick = this.el.querySelector<HTMLElement>('[data-stick]')!
+    stick.addEventListener('pointerdown', e => {
+      e.preventDefault()
+      this.stickId = e.pointerId
+      stick.setPointerCapture(e.pointerId)
+      const r = stick.getBoundingClientRect()
+      this.stickCenter = r.left + r.width / 2
+      this.moveStick(e.clientX, r.width)
     })
-    window.addEventListener('pointermove', e => {
-      if (e.pointerId === this.stickId) {
-        let dx = e.clientX - this.origin.x
-        let dy = e.clientY - this.origin.y
-        const len = Math.hypot(dx, dy)
-        if (len > radius) {
-          dx = (dx / len) * radius
-          dy = (dy / len) * radius
-        }
-        this.knob.style.transform = `translate(${dx}px, ${dy}px)`
-        this.input.setTouchMove(dx / radius, -dy / radius)
-      } else if (e.pointerId === this.lookId) {
-        this.input.addTouchLook(e.clientX - this.last.x, e.clientY - this.last.y)
-        this.last = { x: e.clientX, y: e.clientY }
-      }
+    stick.addEventListener('pointermove', e => {
+      if (e.pointerId !== this.stickId) return
+      this.moveStick(e.clientX, stick.getBoundingClientRect().width)
     })
-    const end = (e: PointerEvent) => {
-      if (e.pointerId === this.stickId) {
-        this.stickId = null
-        this.knob.style.transform = ''
-        this.stick.classList.remove('is-active')
-        this.input.setTouchMove(0, 0)
-      }
-      if (e.pointerId === this.lookId) this.lookId = null
+    const release = (e: PointerEvent) => {
+      if (e.pointerId !== this.stickId) return
+      this.stickId = -1
+      this.stickX = 0
+      this.input.setTouchSteer(0)
+      this.knob.style.transform = 'translate(-50%, -50%)'
     }
-    window.addEventListener('pointerup', end)
-    window.addEventListener('pointercancel', end)
-
-    for (const btn of layer.querySelectorAll<HTMLElement>('[data-touch]')) {
-      const action = btn.dataset.touch as 'jump' | 'dash'
-      btn.addEventListener('pointerdown', e => {
+    stick.addEventListener('pointerup', release)
+    stick.addEventListener('pointercancel', release)
+    for (const btn of this.el.querySelectorAll<HTMLElement>('[data-a]')) {
+      const action = btn.dataset.a as Action
+      const down = (e: PointerEvent) => {
         e.preventDefault()
         btn.setPointerCapture(e.pointerId)
-        btn.classList.add('is-down')
+        btn.classList.add('down')
         this.input.setTouchButton(action, true)
-      })
+      }
       const up = () => {
-        btn.classList.remove('is-down')
+        btn.classList.remove('down')
         this.input.setTouchButton(action, false)
       }
+      btn.addEventListener('pointerdown', down)
       btn.addEventListener('pointerup', up)
       btn.addEventListener('pointercancel', up)
+      btn.addEventListener('contextmenu', e => e.preventDefault())
     }
+    this.relabel()
+    i18n.onChange(() => this.relabel())
+    const coarse = matchMedia('(pointer: coarse)')
+    const mark = () => document.body.classList.toggle('touch-device', coarse.matches || this.input.method === 'touch')
+    mark()
+    coarse.addEventListener?.('change', mark)
+    window.addEventListener('touchstart', () => document.body.classList.add('touch-device'), { passive: true })
+    const tick = () => {
+      this.el.classList.toggle('on', this.active())
+      requestAnimationFrame(tick)
+    }
+    tick()
+  }
+
+  private relabel(): void {
+    for (const el of this.el.querySelectorAll<HTMLElement>('[data-l]')) el.textContent = this.i18n.t(el.dataset.l!)
+  }
+
+  private moveStick(clientX: number, width: number): void {
+    const half = width / 2 - 20
+    const dx = Math.max(-half, Math.min(half, clientX - this.stickCenter))
+    // Small dead zone, then a slightly eased response for fine corrections.
+    const raw = dx / half
+    const mag = Math.max(0, Math.abs(raw) - 0.08) / 0.92
+    this.stickX = Math.sign(raw) * Math.pow(mag, 1.25)
+    this.input.setTouchSteer(this.stickX)
+    this.knob.style.transform = `translate(calc(-50% + ${dx}px), -50%)`
   }
 }

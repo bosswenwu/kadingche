@@ -12,52 +12,73 @@ async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#game')!
   const firstRun = safeGet(SAVE_KEY) === null
   const save = new SaveStore()
-
   const i18n = new I18n(resolveLocale(save.data.locale, navigator.languages))
-  const input = new Input(canvas)
+  const input = new Input()
   const audio = new Audio()
   let game: Game | undefined
-  let lockLostAt = 0
+  let lastCharacter = save.data.character
 
   const applySettings = (d: SaveData) => {
-    input.sensitivity = d.sensitivity
-    input.invertY = d.invertY
     audio.setVolumes(d.musicVolume, d.sfxVolume, d.muted)
-    if (game) game.reducedMotion = d.reducedMotion
+    input.autoThrottle = d.autoGas
+    if (game) {
+      game.reducedMotion = d.reducedMotion
+      game.sensitivity = d.sensitivity
+      game.setDifficulty(d.difficulty)
+    }
   }
 
-  const startRun = (tutorial: boolean) => {
+  const beginRace = (id: string) => {
     if (!game) return
     audio.unlock()
-    audio.startMusic()
-    game.start(tutorial)
+    lastCharacter = id
+    save.update({ character: id })
+    const tutorial = !save.data.tutorialDone
+    ui.resetHud()
+    ui.showTutorial(tutorial)
+    game.startRace(id, tutorial)
+    if (tutorial) save.update({ tutorialDone: true })
     ui.show('hud')
+    input.clearPresses()
     loop.resetAccumulator()
-    input.lockPointer()
   }
+
   const pause = () => {
     if (game?.mode !== 'playing') return
     game.pause()
     ui.show('pause')
-    input.unlockPointer()
   }
   const resume = () => {
     if (game?.mode !== 'paused') return
     game.resume()
-    ui.show('hud')
+    ui.show((game.mode as string) === 'ended' ? 'results' : 'hud')
+    input.clearPresses()
     loop.resetAccumulator()
-    input.lockPointer()
+  }
+  const toTitle = () => {
+    game?.toTitle()
+    ui.show('title')
   }
 
-  const ui = new Ui(i18n, save, audio, input, {
-    play: () => startRun(!save.data.tutorialDone),
-    restart: () => startRun(false),
-    resume,
-    quit: () => {
-      game?.toTitle()
-      ui.show('title')
-      input.unlockPointer()
+  const ui = new Ui(document.getElementById('ui')!, i18n, save, audio, input, {
+    race: () => {
+      audio.unlock()
+      game?.showSelect(save.data.character)
+      ui.show('select')
     },
+    selectChanged: id => game?.showSelect(id),
+    startRace: id => beginRace(id),
+    backToTitle: toTitle,
+    resume,
+    restart: () => beginRace(lastCharacter),
+    quit: toTitle,
+    again: () => beginRace(lastCharacter),
+    change: () => {
+      game?.toTitle()
+      game?.showSelect(lastCharacter)
+      ui.show('select')
+    },
+    skipIntro: () => game?.skipIntro(),
     settings: patch => {
       const qualityChanged = patch.quality !== undefined && patch.quality !== save.data.quality
       save.update(patch)
@@ -69,71 +90,86 @@ async function boot(): Promise<void> {
   ui.show('boot')
   applySettings(save.data)
 
-  // Boot: the UI above is already on screen; three.js, Rapier (WASM) and the game load as a
-  // separate chunk behind the progress bar. Preload models/textures here too (engine/assets.ts).
   let loaded = 0
-  const track = <T>(p: Promise<T>): Promise<T> => p.then(v => (ui.setBootProgress(0.1 + (++loaded / 4) * 0.9), v))
+  const track = <T>(p: Promise<T>): Promise<T> => p.then(v => (ui.setBootProgress(0.1 + (++loaded / 4) * 0.8), v))
   ui.setBootProgress(0.1)
-  const [{ Game }, { Renderer, suggestQuality }, physics] = await Promise.all([
+  const [{ Game }, { Renderer, suggestQuality }, physics, { renderPortraits }] = await Promise.all([
     track(import('./game/game')),
     track(import('./engine/renderer')),
     track(import('./engine/physics')),
-    track(document.fonts.ready),
+    track(import('./game/kartModel')),
+    document.fonts.ready,
   ])
   await physics.initPhysics()
   if (firstRun) {
     save.update({ quality: suggestQuality() })
     ui.refreshSettings()
   }
-
   const renderer = new Renderer(canvas, save.data.quality)
-  game = new Game(renderer, input, audio, {
-    popup: (text, at, kind) => ui.popup(text, at, kind),
-    hurt: () => ui.hurt(),
-    hint: hint => ui.hint(hint),
-    tutorialDone: () => save.update({ tutorialDone: true }),
-    end: run => {
-      input.unlockPointer()
-      window.setTimeout(() => ui.showResults(run), run.phase === 'won' ? 1400 : 900)
+  const { ROSTER } = await import('./game/characters')
+  ui.setPortraits(renderPortraits(renderer.gl, ROSTER))
+  ui.setBootProgress(0.95)
+
+  game = new Game(
+    renderer,
+    input,
+    audio,
+    {
+      banner: (kind, vars) => ui.banner(kind, vars),
+      countdown: n => ui.countdown(n),
+      hurt: kind => ui.hurt(kind),
+      hint: h => ui.hint(h),
+      placeChange: up => ui.placeChange(up),
+      itemReady: kind => ui.itemReady(kind),
+      toast: (key, vars) => ui.toast(key, vars),
+      finished: result => ui.showResults(result),
     },
-  })
-  game.reducedMotion = save.data.reducedMotion
+    save.data.quality,
+  )
+  applySettings(save.data)
+  ui.setTrackOutline(game.track.outline(4))
   const g = game
 
+  let stepped = false
   const loop = new GameLoop({
-    step: dt => g.step(dt),
+    step: dt => {
+      g.step(dt)
+      stepped = true
+    },
     render: (alpha, frameSeconds) => {
       input.update()
-      if (input.consume('pause') && performance.now() - lockLostAt > 300) {
-        if (g.mode === 'playing') pause()
+      if (input.consume('pause')) {
+        if (g.mode === 'playing' && ui.screen === 'hud') pause()
         else if (g.mode === 'paused' && ui.screen === 'pause') resume()
       }
       ui.frame(frameSeconds)
       loop.paused = g.mode === 'paused'
       g.render(alpha, frameSeconds)
-      if (g.mode === 'playing' || g.mode === 'ended') ui.updateHud(g.run, g.compass())
+      if (ui.screen === 'hud' && g.player) ui.updateHud(g.hud(), frameSeconds)
+      // Presses are consumed inside fixed steps; drop leftovers once a step had the chance.
+      if (stepped) {
+        input.clearPresses()
+        stepped = false
+      }
     },
   })
   loop.start()
 
-  document.addEventListener('pointerlockchange', () => {
-    // Browsers release pointer lock on Escape without delivering the key: treat that as pause.
-    if (!document.pointerLockElement && g.mode === 'playing' && input.method === 'keyboard') {
-      lockLostAt = performance.now()
-      pause()
-    }
-  })
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) pause()
   })
   window.addEventListener('game:pause', pause)
-  canvas.addEventListener('click', () => {
-    if (g.mode === 'playing') input.lockPointer()
-  })
-  new TouchControls(document.getElementById('ui')!, input, () => g.mode === 'playing')
-
-  window.setTimeout(() => ui.show('title'), 250)
-  // Debug/test hook (read-only use): smoke tests inspect run state through it.
+  const unlockMusic = () => {
+    if (audio.running) return
+    audio.unlock()
+    if (g.mode === 'title' || g.mode === 'select') g.playTitleMusic()
+  }
+  window.addEventListener('pointerdown', unlockMusic)
+  window.addEventListener('keydown', unlockMusic)
+  new TouchControls(document.getElementById('ui')!, input, i18n, () => ui.screen === 'hud' && g.mode === 'playing')
+  ui.setBootProgress(1)
+  window.setTimeout(() => ui.show('title'), 200)
+  // Debug/test hook (read-only use): smoke tests inspect state through it.
   ;(window as unknown as { __game: unknown }).__game = { game: g, ui, input, save }
 }
 

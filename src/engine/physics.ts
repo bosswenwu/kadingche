@@ -53,17 +53,26 @@ export class Physics {
   }
 
   /** Fixed box collider (level geometry). `size` is the full extent, matching BoxGeometry arguments. */
-  addStaticBox(center: THREE.Vector3, size: THREE.Vector3, rotation?: THREE.Quaternion, friction = 0.9): RAPIER.Collider {
+  addStaticBox(center: THREE.Vector3, size: THREE.Vector3, rotation?: THREE.Quaternion, friction = 0.9, groups?: number): RAPIER.Collider {
     const desc = RAPIER.ColliderDesc.cuboid(size.x / 2, size.y / 2, size.z / 2)
       .setTranslation(center.x, center.y, center.z)
       .setFriction(friction)
     if (rotation) desc.setRotation(rotation)
+    if (groups !== undefined) desc.setCollisionGroups(groups)
+    return this.world.createCollider(desc)
+  }
+
+  /** Fixed triangle-mesh collider (track surface, ramps). Positions are world-space xyz triples. */
+  addStaticTrimesh(vertices: Float32Array, indices: Uint32Array, groups?: number, friction = 0.6): RAPIER.Collider {
+    const desc = RAPIER.ColliderDesc.trimesh(vertices, indices).setFriction(friction)
+    if (groups !== undefined) desc.setCollisionGroups(groups)
     return this.world.createCollider(desc)
   }
 
   /** Fixed upright cylinder collider; matches CylinderGeometry(radius, radius, height). */
-  addStaticCylinder(center: THREE.Vector3, radius: number, height: number, friction = 0.9): RAPIER.Collider {
+  addStaticCylinder(center: THREE.Vector3, radius: number, height: number, friction = 0.9, groups?: number): RAPIER.Collider {
     const desc = RAPIER.ColliderDesc.cylinder(height / 2, radius).setTranslation(center.x, center.y, center.z).setFriction(friction)
+    if (groups !== undefined) desc.setCollisionGroups(groups)
     return this.world.createCollider(desc)
   }
 
@@ -83,12 +92,13 @@ export class Physics {
   }
 
   /** Dynamic body simulated by Rapier (crates, debris). */
-  addDynamic(object: THREE.Object3D, collider: RAPIER.ColliderDesc, linearDamping = 0.1): RAPIER.RigidBody {
+  addDynamic(object: THREE.Object3D, collider: RAPIER.ColliderDesc, linearDamping = 0.1, ccd = true): RAPIER.RigidBody {
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(object.position.x, object.position.y, object.position.z)
+        .setRotation(object.quaternion)
         .setLinearDamping(linearDamping)
-        .setCcdEnabled(true),
+        .setCcdEnabled(ccd),
     )
     this.world.createCollider(collider, body)
     this.bind(body, object)
